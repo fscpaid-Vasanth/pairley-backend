@@ -1,0 +1,304 @@
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { NotificationService } from '../common/services/notification.service';
+import { OfferType, OfferStatus, InterestStatus, SubscriptionStatus, VerificationStatus } from '@prisma/client';
+
+@Injectable()
+export class OfferService {
+  constructor(
+    private prisma: PrismaService,
+    private notificationService: NotificationService
+  ) {}
+
+  async createOffer(businessId: string, data: any) {
+    // 1. Verify business is verified
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      include: { subscriptions: true }
+    });
+
+    if (!business) {
+      throw new NotFoundException('Business profile not found');
+    }
+
+    if (business.verification_status !== VerificationStatus.APPROVED) {
+      throw new ForbiddenException('Your business account has not been approved by the administrator yet.');
+    }
+
+    // 2. Verify business has active subscription
+    const activeSub = business.subscriptions.find(
+      (sub) => sub.status === SubscriptionStatus.ACTIVE && new Date() < sub.expiry_date
+    );
+
+    if (!activeSub) {
+      throw new ForbiddenException('An active subscription is required to publish offers.');
+    }
+
+    // 3. Create the offer
+    return this.prisma.offer.create({
+      data: {
+        business_id: businessId,
+        title: data.title,
+        description: data.description,
+        offer_type: data.offer_type as OfferType,
+        category: data.category,
+        original_price: parseFloat(data.original_price),
+        offer_price: parseFloat(data.offer_price),
+        required_people: parseInt(data.required_people),
+        start_date: new Date(data.start_date),
+        end_date: new Date(data.end_date),
+        offer_image: data.offer_image || null,
+        status: OfferStatus.ACTIVE, // Published directly as active for validated business
+      },
+    });
+  }
+
+  async updateOffer(businessId: string, offerId: string, data: any) {
+    const offer = await this.prisma.offer.findUnique({ where: { id: offerId } });
+    if (!offer) {
+      throw new NotFoundException('Offer not found');
+    }
+
+    if (offer.business_id !== businessId) {
+      throw new ForbiddenException('You do not own this offer');
+    }
+
+    const { id, business_id, created_at, updated_at, ...updates } = data;
+
+    if (updates.original_price) updates.original_price = parseFloat(updates.original_price);
+    if (updates.offer_price) updates.offer_price = parseFloat(updates.offer_price);
+    if (updates.required_people) updates.required_people = parseInt(updates.required_people);
+    if (updates.start_date) updates.start_date = new Date(updates.start_date);
+    if (updates.end_date) updates.end_date = new Date(updates.end_date);
+    if (updates.offer_type) updates.offer_type = updates.offer_type as OfferType;
+    if (updates.status) updates.status = updates.status as OfferStatus;
+
+    return this.prisma.offer.update({
+      where: { id: offerId },
+      data: updates,
+    });
+  }
+
+  async deleteOffer(businessId: string, offerId: string) {
+    const offer = await this.prisma.offer.findUnique({ where: { id: offerId } });
+    if (!offer) {
+      throw new NotFoundException('Offer not found');
+    }
+
+    if (offer.business_id !== businessId) {
+      throw new ForbiddenException('You do not own this offer');
+    }
+
+    await this.prisma.offer.delete({ where: { id: offerId } });
+    return { success: true, message: 'Offer deleted successfully' };
+  }
+
+  async listOffers(filters: { category?: string; businessId?: string; search?: string; status?: string }) {
+    const whereClause: any = {};
+
+    if (filters.category) {
+      whereClause.category = filters.category;
+    }
+    if (filters.businessId) {
+      whereClause.business_id = filters.businessId;
+    }
+    if (filters.status) {
+      whereClause.status = filters.status as OfferStatus;
+    } else {
+      whereClause.status = OfferStatus.ACTIVE; // Active by default
+    }
+
+    if (filters.search) {
+      whereClause.OR = [
+        { title: { contains: filters.search, mode: 'insensitive' } },
+        { description: { contains: filters.search, mode: 'insensitive' } },
+      ];
+    }
+
+    return this.prisma.offer.findMany({
+      where: whereClause,
+      include: {
+        business: {
+          select: {
+            business_name: true,
+            city: true,
+            shop_photo: true,
+          },
+        },
+      },
+      orderBy: { created_at: 'desc' },
+    });
+  }
+
+  async getDetails(id: string) {
+    const offer = await this.prisma.offer.findUnique({
+      where: { id },
+      include: {
+        business: {
+          select: {
+            id: true,
+            business_name: true,
+            owner_name: true,
+            mobile: true,
+            email: true,
+            address: true,
+            city: true,
+            state: true,
+            shop_photo: true,
+          },
+        },
+      },
+    });
+
+    if (!offer) {
+      throw new NotFoundException('Offer not found');
+    }
+
+    return offer;
+  }
+
+  async getOffersByCategory(category: string) {
+    return this.listOffers({ category });
+  }
+
+  async expressInterest(customerId: string, offerId: string) {
+    // 1. Fetch offer details
+    const offer = await this.prisma.offer.findUnique({
+      where: { id: offerId },
+      include: { interests: true },
+    });
+
+    if (!offer) {
+      throw new NotFoundException('Offer not found');
+    }
+
+    if (offer.status !== OfferStatus.ACTIVE) {
+      throw new BadRequestException('This offer is not active');
+    }
+
+    // 2. Check if already joined
+    const existing = await this.prisma.offerInterest.findUnique({
+      where: {
+        offer_id_customer_id: {
+          offer_id: offerId,
+          customer_id: customerId,
+        },
+      },
+    });
+
+    if (existing) {
+      return { success: true, message: 'Already expressed interest in this offer', interest: existing };
+    }
+
+    // 3. Create interest
+    const interest = await this.prisma.offerInterest.create({
+      data: {
+        offer_id: offerId,
+        customer_id: customerId,
+        status: InterestStatus.INTERESTED,
+      },
+    });
+
+    // 4. Update offer joined_people count
+    const updatedOffer = await this.prisma.offer.update({
+      where: { id: offerId },
+      data: {
+        joined_people: { increment: 1 },
+      },
+      include: {
+        interests: {
+          include: { customer: true },
+        },
+        business: true,
+      },
+    });
+
+    // Notify business owner about a partner joining
+    await this.notificationService.sendNotification(
+      updatedOffer.business_id,
+      'Partner Joined Deal',
+      `A new customer joined your offer: "${updatedOffer.title}"! Total joined: ${updatedOffer.joined_people}`,
+      'Partner Joined'
+    );
+
+    // 5. Check if required target is reached
+    if (updatedOffer.joined_people >= updatedOffer.required_people) {
+      // Transition all interests for this offer to READY_TO_BUY
+      await this.prisma.offerInterest.updateMany({
+        where: { offer_id: offerId, status: InterestStatus.INTERESTED },
+        data: { status: InterestStatus.READY_TO_BUY },
+      });
+
+      // Update offer status to CLOSED (meaning capacity reached)
+      await this.prisma.offer.update({
+        where: { id: offerId },
+        data: { status: OfferStatus.CLOSED },
+      });
+
+      // Notify business owner
+      await this.notificationService.sendNotification(
+        updatedOffer.business_id,
+        'Offer Target Achieved!',
+        `Your offer "${updatedOffer.title}" has reached the required participation of ${updatedOffer.required_people} people. You can now contact the ready buyers.`,
+        'Offer Completed'
+      );
+
+      // Notify all customers who joined
+      for (const i of updatedOffer.interests) {
+        await this.notificationService.sendNotification(
+          i.customer_id,
+          'Group Deal Completed!',
+          `The deal for "${updatedOffer.title}" is ready! The business will contact you soon.`,
+          'Offer Completed'
+        );
+      }
+    }
+
+    return { success: true, message: 'Expressed interest successfully', interest };
+  }
+
+  async declareReadyToBuy(customerId: string, offerId: string) {
+    const interest = await this.prisma.offerInterest.findUnique({
+      where: {
+        offer_id_customer_id: {
+          offer_id: offerId,
+          customer_id: customerId,
+        },
+      },
+    });
+
+    if (!interest) {
+      throw new NotFoundException('You have not expressed interest in this offer yet');
+    }
+
+    const updatedInterest = await this.prisma.offerInterest.update({
+      where: { id: interest.id },
+      data: { status: InterestStatus.READY_TO_BUY },
+    });
+
+    return { success: true, message: 'Ready to buy status set successfully', interest: updatedInterest };
+  }
+
+  async getInterestedCustomers(businessId: string) {
+    // Fetch all offers owned by this business, and list their interest lists
+    return this.prisma.offer.findMany({
+      where: { business_id: businessId },
+      include: {
+        interests: {
+          include: {
+            customer: {
+              select: {
+                id: true,
+                name: true,
+                mobile: true,
+                email: true,
+                city: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { created_at: 'desc' },
+    });
+  }
+}

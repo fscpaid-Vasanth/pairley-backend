@@ -1,0 +1,235 @@
+datasource db {
+  provider = "postgresql"
+}
+
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  VERIFIED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+  PENDING
+}
+
+enum OfferType {
+  BOGO
+  BOGT
+  GROUP_DISCOUNT
+  BULK_PURCHASE
+  MEMBERSHIP_CAMPAIGN
+  PACKAGE_DEAL
+}
+
+enum OfferStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  EXPIRED
+  CLOSED
+  REJECTED
+}
+
+enum InterestStatus {
+  INTERESTED
+  READY_TO_BUY
+  CONTACTED
+  COMPLETED
+  CANCELLED
+}
+
+enum SupportStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model Customer {
+  id                  String             @id @default(uuid())
+  name                String
+  mobile              String             @unique
+  email               String?            @unique
+  gender              String?
+  date_of_birth       DateTime?
+  age                 Int?
+  city                String?
+  state               String?
+  profile_photo       String?
+  referral_code       String?
+  verification_status VerificationStatus @default(UNVERIFIED)
+  created_at          DateTime           @default(now())
+  updated_at          DateTime           @updatedAt
+
+  interests           OfferInterest[]
+  saved_offers        SavedOffer[]
+  ratings             Rating[]
+
+  @@map("customers")
+}
+
+model Business {
+  id                  String             @id @default(uuid())
+  owner_name          String
+  business_name       String
+  business_type       String
+  category            String
+  mobile              String             @unique
+  email               String             @unique
+  password_hash       String? // Optional password for portal login
+  address             String
+  city                String
+  state               String
+  pincode             String
+  aadhaar_number      String?
+  pan_number          String?
+  gst_number          String?
+  shop_photo          String?
+  verification_status VerificationStatus @default(PENDING)
+  subscription_id     String?
+  created_at          DateTime           @default(now())
+  updated_at          DateTime           @updatedAt
+
+  subscriptions       Subscription[]
+  offers              Offer[]
+  ratings             Rating[]
+
+  @@map("businesses")
+}
+
+model Subscription {
+  id                String             @id @default(uuid())
+  business_id       String
+  plan_name         String // Basic, Premium
+  amount            Float
+  start_date        DateTime
+  expiry_date       DateTime
+  status            SubscriptionStatus @default(PENDING)
+  payment_reference String?
+  created_at        DateTime           @default(now())
+
+  business          Business           @relation(fields: [business_id], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+model Offer {
+  id              String         @id @default(uuid())
+  business_id     String
+  title           String
+  description     String
+  offer_type      OfferType
+  category        String
+  original_price  Float
+  offer_price     Float
+  required_people Int
+  joined_people   Int            @default(0)
+  start_date      DateTime
+  end_date        DateTime
+  offer_image     String?
+  status          OfferStatus    @default(DRAFT)
+  created_at      DateTime       @default(now())
+  updated_at      DateTime       @updatedAt
+
+  business        Business       @relation(fields: [business_id], references: [id], onDelete: Cascade)
+  interests       OfferInterest[]
+  saved_by        SavedOffer[]
+
+  @@map("offers")
+}
+
+model OfferInterest {
+  id          String         @id @default(uuid())
+  offer_id    String
+  customer_id String
+  status      InterestStatus @default(INTERESTED)
+  created_at  DateTime       @default(now())
+
+  offer       Offer          @relation(fields: [offer_id], references: [id], onDelete: Cascade)
+  customer    Customer       @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+
+  @@unique([offer_id, customer_id])
+  @@map("offer_interests")
+}
+
+model SavedOffer {
+  id          String   @id @default(uuid())
+  customer_id String
+  offer_id    String
+  created_at  DateTime @default(now())
+
+  customer    Customer @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  offer       Offer    @relation(fields: [offer_id], references: [id], onDelete: Cascade)
+
+  @@unique([customer_id, offer_id])
+  @@map("saved_offers")
+}
+
+model Notification {
+  id                String   @id @default(uuid())
+  user_id           String // Can link to Customer or Business ID
+  title             String
+  message           String
+  notification_type String // New Offer, Partner Joined, Offer Completed, Subscription Expiry, etc.
+  is_read           Boolean  @default(false)
+  created_at        DateTime @default(now())
+
+  @@map("notifications")
+}
+
+model Rating {
+  id          String   @id @default(uuid())
+  customer_id String
+  business_id String
+  rating      Int
+  review      String?
+  created_at  DateTime @default(now())
+
+  customer    Customer @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  business    Business @relation(fields: [business_id], references: [id], onDelete: Cascade)
+
+  @@unique([customer_id, business_id])
+  @@map("ratings")
+}
+
+model SupportTicket {
+  id          String        @id @default(uuid())
+  user_id     String // Can link to Customer or Business ID
+  subject     String
+  description String
+  status      SupportStatus @default(OPEN)
+  created_at  DateTime      @default(now())
+
+  @@map("support_tickets")
+}
+
+model Admin {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  password_hash String
+  name          String
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@map("admins")
+}
+
+model OtpVerification {
+  id         String   @id @default(uuid())
+  mobile     String
+  code       String
+  expires_at DateTime
+  created_at DateTime @default(now())
+
+  @@map("otp_verifications")
+}
